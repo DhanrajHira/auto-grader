@@ -70,3 +70,8 @@ pip3 install -r requirements.txt
 python3 auto_mark.py mark file-to-mark.pdf answer-file.pdf
 streamlit run webapp.py
 ```
+ or simply
+
+```bash
+source setup-multipass-ubuntu-24.04-LTS.sh
+```
