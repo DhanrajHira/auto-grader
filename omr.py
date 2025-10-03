@@ -578,10 +578,12 @@ def mark_pages(attempt_pages, answers):
 
         logger.debug(f"The PDF page is rotated: {page.rotation} degrees")
         draw_detected_objects_on_page(pdf_bubbles, pdf_guides, page)
+
+        bubble_radius = pdf_bubbles[0].radius + 3 if pdf_bubbles else 0
         draw_correct_answers_on_page(
             pdf_guide_matrices,
             correct_answers_on_this_page,
-            pdf_bubbles[0].radius + 3,
+            bubble_radius,
             page,
         )
         correct_positions = correct_attempt_positions(
