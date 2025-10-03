@@ -53,3 +53,20 @@ python3 auto_mark.py mark-dir <dir> <answer_file> [-j <threads>]
 -   `<dir>`: The directory containing the exam files.
 -   `<answer_file>`: The path to the answer key file.
 -   `-j <threads>`: The number of threads to use for marking.
+
+Running in a multipass vm
+```bash
+multipass launch 24.04 -n auto-grader-vm
+multipass shell auto-grader-vm
+
+sudo apt update
+sudo apt install python3-pip python3.12-venv
+sudo apt-get install -y libgl1-mesa-dev
+
+python3 -m venv venv
+source venv/bin/activate
+pip3 install -r requirements.txt
+
+python3 auto_mark.py mark file-to-mark.pdf answer-file.pdf
+streamlit run webapp.py
+```
