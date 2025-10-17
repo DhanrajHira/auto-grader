@@ -206,6 +206,16 @@ class GuideMatrix:
     def __repr__(self):
         return f"GuideMatrix<{self.num_rows}x{self.num_cols}>(<{self.horizontal_guides}>x<{self.vertical_guides}>)"
 
+    def is_point_in_a_cell(self, x, y, tolerance=30):
+        for row in range(self.num_rows):
+            for col in range(self.num_cols):
+                cell_x, cell_y = self.cell_center_at(row, col)
+                x_diff = abs(cell_x - x)
+                y_diff = abs(cell_y - y)
+                if x_diff < tolerance and y_diff < tolerance:
+                    return True
+        return False
+
 
 def show_image(img, convert_from_grayscale=False):
     if convert_from_grayscale:
@@ -470,6 +480,7 @@ def get_attempts_on_page_img(page_image: cv.typing.MatLike):
     attempt_matrix, guide_matrices = get_attempt_matrix_from_raw_objs(
         processed_image, bubbles, guides
     )
+    bubbles = filter_out_of_grid_bubbles(bubbles, guide_matrices)
     return attempt_matrix, guides, bubbles, guide_matrices, transformation_data
 
 
@@ -522,6 +533,15 @@ def draw_question_status_on_page(guide_matrices, results, page):
         rect.normalize()
         color = PDF_GREEN if result else PDF_RED
         page.draw_rect(rect, color=color, fill=color)
+
+
+def filter_out_of_grid_bubbles(bubbles, guides):
+    filtered_bubbles = []
+    for guide in guides:
+        for bubble in bubbles:
+            if guide.is_point_in_a_cell(bubble.x, bubble.y, bubble.radius):
+                filtered_bubbles.append(bubble)
+    return filtered_bubbles
 
 
 def draw_detected_objects_on_page(bubbles, guides, page):
@@ -579,7 +599,9 @@ def mark_pages(attempt_pages, answers):
         logger.debug(f"The PDF page is rotated: {page.rotation} degrees")
         draw_detected_objects_on_page(pdf_bubbles, pdf_guides, page)
 
-        bubble_radius = pdf_bubbles[0].radius + 3 if pdf_bubbles else pdf_guides[0].width
+        bubble_radius = (
+            pdf_bubbles[0].radius + 3 if pdf_bubbles else pdf_guides[0].width
+        )
         draw_correct_answers_on_page(
             pdf_guide_matrices,
             correct_answers_on_this_page,
@@ -628,8 +650,12 @@ def mark_single_file(attempt_file_bytes, answer_file_bytes):
         "Not all attempts seem to have all pages"
     )
     attempts = chunked(attempt_pages, len(answers))
-    for attempt in attempts:
-        mark_pages(attempt, answers)
+    for num, attempt in enumerate(attempts, start=1):
+        try:
+            mark_pages(attempt, answers)
+        except Exception as _:
+            print(f"Failed to mark attempt {num}. Please check the file!")
+
     ret = attempt_file.tobytes()
     attempt_file.close()
     return ret
