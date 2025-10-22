@@ -16,6 +16,9 @@ PDF_BLUE = (0.0, 0.0, 1.0)
 
 DPI = 200
 TRIANGLE_MIN_AREA = DPI
+TARGET_IMG_HEIGHT = 2200
+TARGET_IMG_WIDTH = 1700
+TARGET_ASPECT_RATIO = TARGET_IMG_WIDTH / TARGET_IMG_HEIGHT
 
 logger = logging.getLogger("OMR")
 
@@ -241,14 +244,15 @@ def get_line_angle(line):
 
 def fix_page_orientation(page_img):
     img = cv.cvtColor(page_img, cv.COLOR_BGR2GRAY)
-
-    sharpening_kernel = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
-    img = cv.filter2D(img, -1, sharpening_kernel)
-
     _, img = cv.threshold(img, 100, 255, cv.THRESH_BINARY_INV)
 
+    # Erode away thin lines.
     erosion_kernel = np.ones((5, 5), np.uint8)
     img = cv.erode(img, erosion_kernel, iterations=1)
+
+    # Sharpen whats left.
+    sharpening_kernel = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
+    img = cv.filter2D(img, -1, sharpening_kernel)
 
     contours, _ = cv.findContours(img, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
 
@@ -490,6 +494,11 @@ def get_image_from_page(page):
         np.frombuffer(page_image_bytes, dtype=np.uint8), cv.IMREAD_UNCHANGED
     )
     assert page_image is not None
+    logger.debug(f"Extracted image from page with resolution: {page_image.shape}")
+    page_image = cv.resize(
+        page_image, (TARGET_IMG_WIDTH, TARGET_IMG_HEIGHT), interpolation=cv.INTER_AREA
+    )
+    logger.debug(f"Resized to resolution: {(TARGET_IMG_WIDTH, TARGET_IMG_HEIGHT)}")
     return page_image
 
 
