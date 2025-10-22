@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from bisect import bisect_left
 import logging
 from itertools import chain
+from copy import deepcopy
 
 BGR_BLUE = (255, 0, 0)
 BGR_GREEN = (0, 255, 0)
@@ -52,6 +53,160 @@ class TransformationInfo:
         x_unrotated = rotated_x + center_x
         y_unrotated = rotated_y + center_y
         return x_unrotated, y_unrotated
+
+
+@dataclass
+class ImgTransformationInfo:
+    rotation_radians: float
+    crop_top: int
+    crop_left: int
+    scale_height: float
+    scale_width: float
+
+    def __init__(self):
+        self.rotation_radians = 0
+        self.crop_top = 0
+        self.crop_left = 0
+        self.scale_width = 1.0
+        self.scale_height = 1.0
+
+    def record_crop_left(self, pixels):
+        assert pixels >= 0, "Cannot crop a negative amount"
+        rotated = deepcopy(self)
+        rotated.crop_left += pixels
+        return rotated
+
+    def record_crop_right(self, pixels):
+        assert pixels >= 0, "Cannot crop a negative amount"
+        return deepcopy(self)
+
+    def record_crop_top(self, pixels):
+        assert pixels >= 0, "Cannot crop a negative amount"
+        cropped = deepcopy(self)
+        cropped.crop_top += pixels
+        return cropped
+
+    def record_crop_bottom(self, pixels):
+        assert pixels >= 0, "Cannot crop a negative amount"
+        return deepcopy(self)
+
+    def record_rotate(self, radians):
+        rotated = deepcopy(self)
+        rotated.rotation_radians += radians
+        return rotated
+
+    def record_scale(self, width_scale, height_scale):
+        scaled = deepcopy(self)
+        scaled.scale_width *= width_scale
+        scaled.scale_height *= height_scale
+        return scaled
+
+    def to_original(self, x, y):
+        pass
+
+    def horizontal_length_to_original(self, length):
+        return length * self.scale_width
+
+    def vertical_length_to_original(self, length):
+        return length * self.scale_height
+
+
+class TransformedImage:
+    def __init__(self, orig_img, transform_img=None, transform_info=None):
+        self.orig_img = orig_img
+        self.transformed_img = transform_img or orig_img.copy()
+        self.img_transform_info = transform_info or ImgTransformationInfo()
+
+    @property
+    def img(self):
+        return self.transformed_img.copy()
+
+    def crop_right(self, pixels):
+        transform = self.img_transform_info.record_crop_right(pixels)
+        img_width = self.transformed_img.shape[1]
+        transformed_img = self.transformed_img[:, : img_width - pixels]
+        return TransformedImage(self.orig_img, transformed_img, transform)
+
+    def crop_left(self, pixels):
+        transform = self.img_transform_info.record_crop_left(pixels)
+        transformed_img = self.transformed_img[:, pixels:]
+        return TransformedImage(self.orig_img, transformed_img, transform)
+
+    def crop_top(self, pixels):
+        transform = self.img_transform_info.record_crop_top(pixels)
+        transformed_img = self.transformed_img[pixels:, :]
+        return TransformedImage(self.orig_img, transformed_img, transform)
+
+    def crop_bottom(self, pixels):
+        transform = self.img_transform_info.record_crop_bottom(pixels)
+        height = self.transformed_img.shape[0]
+        transformed_img = self.transformed_img[: height - pixels, :]
+        return TransformedImage(self.orig_img, transformed_img, transform)
+
+    def scale_to(self, target_width, target_height):
+        height, width = self.transformed_img.shape[0], self.transformed_img.shape[1]
+        transform = self.img_transform_info.record_scale(
+            target_width / width, target_height / height
+        )
+        transformed_img = cv.resize(
+            self.transformed_img,
+            (target_width, target_height),
+            interpolation=cv.INTER_AREA,
+        )
+        return TransformedImage(self.orig_img, transformed_img, transform)
+
+    def rotate(self, radians):
+        transform = self.img_transform_info.record_rotate(radians)
+        height, width = self.transformed_img.shape[0], self.transformed_img.shape[1]
+        center = (width // 2, height // 2)
+        rotation_matrix = cv.getRotationMatrix2D(center, radians, 1.0)
+        transformed_img = cv.warpAffine(
+            self.transformed_img,
+            rotation_matrix,
+            (width, height),
+            flags=cv.INTER_CUBIC,
+            borderMode=cv.BORDER_REPLICATE,
+        )
+        return TransformedImage(self.orig_img, transformed_img, transform)
+
+    def threshold(self, threshold):
+        transfomed_img = cv.threshold(
+            self.transformed_img, threshold, 255, cv.THRESH_BINARY_INV
+        )
+        return TransformedImage(
+            self.orig_img, transfomed_img, deepcopy(self.img_transform_info)
+        )
+
+    def gaussian_blur(self, blur_mask):
+        transformed_img = cv.GaussianBlur(
+            self.transformed_img, (blur_mask, blur_mask), 0
+        )
+        return TransformedImage(
+            self.orig_img, transformed_img, deepcopy(self.img_transform_info)
+        )
+
+    def erode(self, kernel_size):
+        erosion_kernel = np.ones((kernel_size, kernel_size), np.uint8)
+        transformed_img = cv.erode(self.transformed_img, erosion_kernel, iterations=1)
+        return TransformedImage(
+            self.orig_img, transformed_img, deepcopy(self.img_transform_info)
+        )
+
+    def sharpen(self, kernel):
+        transformed_img = cv.filter2D(self.transformed_img, -1, kernel)
+        return TransformedImage(
+            self.orig_img, transformed_img, deepcopy(self.img_transform_info)
+        )
+
+    def show(self):
+        show_image(self.transformed_img)
+
+    def draw_circle_on_original(self, center, radius):
+        self.img_transform_info.to_original()
+        pass
+
+    def draw_square_on_original(self):
+        pass
 
 
 @dataclass
