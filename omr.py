@@ -349,9 +349,6 @@ def detect_bubbles(
     # Need big blur mask and threshold because students sometimes don't pencil
     # in the mark enough or the scanner makes their marks look jagged.
     img = preprocess_image_for_detection(img, blur_mask=17)
-    if False:
-        erosion_kernel = np.ones((11, 11), np.uint8)
-        img = cv.erode(img, erosion_kernel, iterations=1)
     contours, hierarchy = cv.findContours(img, cv.RETR_CCOMP, cv.CHAIN_APPROX_SIMPLE)
     detected_circles = []
     for i, contour in enumerate(contours):
@@ -494,49 +491,64 @@ def get_image_from_page(page):
         np.frombuffer(page_image_bytes, dtype=np.uint8), cv.IMREAD_UNCHANGED
     )
     assert page_image is not None
+    orig_height, orig_width = page_image.shape[0], page_image.shape[1]
     logger.debug(f"Extracted image from page with resolution: {page_image.shape}")
     page_image = cv.resize(
         page_image, (TARGET_IMG_WIDTH, TARGET_IMG_HEIGHT), interpolation=cv.INTER_AREA
     )
     logger.debug(f"Resized to resolution: {(TARGET_IMG_WIDTH, TARGET_IMG_HEIGHT)}")
-    return page_image
+    return page_image, orig_width / TARGET_IMG_WIDTH, orig_height / TARGET_IMG_HEIGHT
 
 
 def get_answers_from_file(document):
     all_answers = []
     for page in document.pages():
-        page_image = get_image_from_page(page)
+        page_image, _, _ = get_image_from_page(page)
         answers_on_this_page, *_ = get_attempts_on_page_img(page_image)
         all_answers.append(answers_on_this_page)
     return all_answers
 
 
-def draw_correct_answers_on_page(guide_matrices, answers, radius, page):
+def draw_correct_answers_on_page(
+    guide_matrices, answers, radius, page, width_scale, height_scale
+):
     guide_matrices = list(guide_matrices)
     num_rows_in_matrix = guide_matrices[0].num_rows
     rot_matrix = page.derotation_matrix
+    max_scale = max(width_scale, height_scale)
     for row, answer in enumerate(answers):
         guide_matrix = guide_matrices[row // num_rows_in_matrix]
         for col, option in enumerate(answer):
             if option != 1:
                 continue
-            center = pymupdf.Point(
-                guide_matrix.cell_center_at(row % num_rows_in_matrix, col)
+            unscaled_x, unscaled_y = guide_matrix.cell_center_at(
+                row % num_rows_in_matrix, col
             )
+            center = pymupdf.Point(unscaled_x * width_scale, unscaled_y * height_scale)
             center = center * rot_matrix
-            page.draw_circle(center, radius, color=PDF_GREEN)
+            page.draw_circle(
+                center,
+                radius * max_scale,
+                color=PDF_GREEN,
+                width=max_scale,
+            )
 
 
-def draw_question_status_on_page(guide_matrices, results, page):
+def draw_question_status_on_page(
+    guide_matrices, results, page, width_scale, height_scale
+):
     guide_matrices = list(guide_matrices)
     num_rows_in_matrix = guide_matrices[0].num_rows
     rot_matrix = page.derotation_matrix
     for row, result in enumerate(results):
         guide_matrix = guide_matrices[row // num_rows_in_matrix]
         guide = guide_matrix.horizontal_guide_for_row(row % num_rows_in_matrix)
-        guide = guide.shifted_by(-guide.width - 2, 0)
+        guide = guide.shifted_by((-guide.width - 2), 0)
         rect = pymupdf.Rect(
-            guide.x, guide.y, guide.x + guide.width, guide.y + guide.height
+            guide.x * width_scale,
+            guide.y * height_scale,
+            (guide.x + guide.width) * width_scale,
+            (guide.y + guide.height) * height_scale,
         )
         rect = rect * rot_matrix
         rect.normalize()
@@ -553,20 +565,25 @@ def filter_out_of_grid_bubbles(bubbles, guides):
     return filtered_bubbles
 
 
-def draw_detected_objects_on_page(bubbles, guides, page):
+def draw_detected_objects_on_page(bubbles, guides, page, width_scale, height_scale):
     rot_matrix = page.derotation_matrix
+    max_scale = max(width_scale, height_scale)
     for bubble in bubbles:
-        center = pymupdf.Point(bubble.x, bubble.y)
+        center = pymupdf.Point(bubble.x * width_scale, bubble.y * height_scale)
         center = center * rot_matrix
         page.draw_circle(
             center,
-            bubble.radius,
+            bubble.radius * max_scale,
             color=PDF_RED,
+            width=max_scale,
         )
 
     for guide in guides:
         rect = pymupdf.Rect(
-            guide.x, guide.y, guide.x + guide.width, guide.y + guide.height
+            guide.x * width_scale,
+            guide.y * height_scale,
+            (guide.x + guide.width) * width_scale,
+            (guide.y + guide.height) * height_scale,
         )
         rect = rect * rot_matrix
         rect.normalize()
@@ -594,7 +611,7 @@ def calculate_final_score(attempt_matrix, answer_matrix):
 def mark_pages(attempt_pages, answers):
     all_attempts = []
     for page, correct_answers_on_this_page in zip(attempt_pages, answers):
-        page_image = get_image_from_page(page)
+        page_image, width_scale, height_scale = get_image_from_page(page)
         attempts, guides, bubbles, guide_matrices, transform_data = (
             get_attempts_on_page_img(page_image)
         )
@@ -606,7 +623,9 @@ def mark_pages(attempt_pages, answers):
         pdf_guide_matrices = [gm.to_pdf_cords(transform_data) for gm in guide_matrices]
 
         logger.debug(f"The PDF page is rotated: {page.rotation} degrees")
-        draw_detected_objects_on_page(pdf_bubbles, pdf_guides, page)
+        draw_detected_objects_on_page(
+            pdf_bubbles, pdf_guides, page, width_scale, height_scale
+        )
 
         bubble_radius = (
             pdf_bubbles[0].radius + 3 if pdf_bubbles else pdf_guides[0].width
@@ -616,11 +635,15 @@ def mark_pages(attempt_pages, answers):
             correct_answers_on_this_page,
             bubble_radius,
             page,
+            width_scale,
+            height_scale,
         )
         correct_positions = correct_attempt_positions(
             correct_answers_on_this_page, attempts
         )
-        draw_question_status_on_page(pdf_guide_matrices, correct_positions, page)
+        draw_question_status_on_page(
+            pdf_guide_matrices, correct_positions, page, width_scale, height_scale
+        )
 
     answers = list(chain(*answers))
     logger.info("Found Answer Matrix as:")
