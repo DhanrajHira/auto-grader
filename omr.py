@@ -2,6 +2,8 @@ import cv2 as cv
 import pymupdf
 import numpy as np
 
+from transformed_image import ImgTransformationInfo, TransformedImage
+
 from dataclasses import dataclass
 import logging
 from itertools import chain
@@ -20,183 +22,6 @@ TARGET_IMG_WIDTH = 1700
 TARGET_ASPECT_RATIO = TARGET_IMG_WIDTH / TARGET_IMG_HEIGHT
 
 logger = logging.getLogger("OMR")
-
-
-class ImgTransformationInfo:
-    def __init__(self, matrix=None):
-        self.matrix = np.identity(3) if matrix is None else matrix
-
-    def record_crop_left(self, pixels):
-        assert pixels >= 0, "Cannot crop a negative amount"
-        crop_matrix = np.array([[1, 0, -pixels], [0, 1, 0], [0, 0, 1]])
-        new_matrix = np.dot(crop_matrix, self.matrix)
-        return ImgTransformationInfo(new_matrix)
-
-    def record_crop_right(self, pixels):
-        return ImgTransformationInfo(np.array(self.matrix))
-
-    def record_crop_top(self, pixels):
-        assert pixels >= 0, "Cannot crop a negative amount"
-        crop_matrix = np.array([[1, 0, 0], [0, 1, -pixels], [0, 0, 1]])
-        new_matrix = np.dot(crop_matrix, self.matrix)
-        return ImgTransformationInfo(new_matrix)
-
-    def record_crop_bottom(self, pixels):
-        return ImgTransformationInfo(np.array(self.matrix))
-
-    def record_rotate(self, radians, center):
-        cos_rad = np.cos(radians)
-        sin_rad = np.sin(radians)
-        center_x, center_y = center
-
-        to_origin = np.array([[1, 0, -center_x], [0, 1, -center_y], [0, 0, 1]])
-        rotation = np.array([[cos_rad, -sin_rad, 0], [sin_rad, cos_rad, 0], [0, 0, 1]])
-        from_origin = np.array([[1, 0, center_x], [0, 1, center_y], [0, 0, 1]])
-
-        rotation_matrix = from_origin @ rotation @ to_origin
-
-        new_matrix = np.dot(rotation_matrix, self.matrix)
-        return ImgTransformationInfo(new_matrix)
-
-    def record_scale(self, width_scale, height_scale):
-        scale_matrix = np.array(
-            [[1 / width_scale, 0, 0], [0, 1 / height_scale, 0], [0, 0, 1]]
-        )
-        new_matrix = np.dot(scale_matrix, self.matrix)
-        return ImgTransformationInfo(new_matrix)
-
-    def to_original(self, x, y):
-        inverse_matrix = np.linalg.inv(self.matrix)
-        transformed_point = np.array([x, y, 1])
-        original_point = np.dot(inverse_matrix, transformed_point)
-        return original_point[0], original_point[1]
-
-    def horizontal_length_to_original(self, length):
-        # For a forward matrix, the scaling factor is the inverse of what's stored.
-        return length / self.matrix[0, 0]
-
-    def vertical_length_to_original(self, length):
-        # For a forward matrix, the scaling factor is the inverse of what's stored.
-        return length / self.matrix[1, 1]
-
-    def copy(self):
-        return ImgTransformationInfo(np.array(self.matrix))
-
-
-class TransformedImage:
-    def __init__(self, orig_img, transform_img=None, transform_info=None):
-        self.orig_img = orig_img
-        self.transformed_img = (
-            transform_img if transform_img is not None else orig_img.copy()
-        )
-        self.img_transform_info = transform_info or ImgTransformationInfo()
-
-    @property
-    def img(self):
-        return self.transformed_img
-
-    @property
-    def width(self):
-        return self.transformed_img.shape[1]
-
-    @property
-    def height(self):
-        return self.transformed_img.shape[0]
-
-    @property
-    def shape(self):
-        return self.transformed_img.shape
-
-    def crop_right(self, pixels):
-        transform = self.img_transform_info.record_crop_right(pixels)
-        img_width = self.transformed_img.shape[1]
-        transformed_img = self.transformed_img[:, : img_width - pixels].copy()
-        return TransformedImage(self.orig_img, transformed_img, transform)
-
-    def crop_left(self, pixels):
-        transform = self.img_transform_info.record_crop_left(pixels)
-        transformed_img = self.transformed_img[:, pixels:].copy()
-        return TransformedImage(self.orig_img, transformed_img, transform)
-
-    def crop_top(self, pixels):
-        transform = self.img_transform_info.record_crop_top(pixels)
-        transformed_img = self.transformed_img[pixels:, :]
-        return TransformedImage(self.orig_img, transformed_img, transform)
-
-    def crop_bottom(self, pixels):
-        transform = self.img_transform_info.record_crop_bottom(pixels)
-        transformed_img = self.transformed_img[:pixels, :]
-        return TransformedImage(self.orig_img, transformed_img, transform)
-
-    def scale_to(self, target_width, target_height):
-        height, width = self.transformed_img.shape[0], self.transformed_img.shape[1]
-        transform = self.img_transform_info.record_scale(
-            width / target_width, height / target_height
-        )
-        transformed_img = cv.resize(
-            self.transformed_img,
-            (target_width, target_height),
-            interpolation=cv.INTER_AREA,
-        )
-        return TransformedImage(self.orig_img, transformed_img, transform)
-
-    def rotate(self, radians):
-        height, width = self.transformed_img.shape[0], self.transformed_img.shape[1]
-        center = (width // 2, height // 2)
-        transform = self.img_transform_info.record_rotate(radians, center)
-        rotation_matrix = cv.getRotationMatrix2D(center, np.degrees(radians), 1.0)
-        transformed_img = cv.warpAffine(
-            self.transformed_img,
-            rotation_matrix,
-            (width, height),
-            flags=cv.INTER_CUBIC,
-            borderMode=cv.BORDER_REPLICATE,
-        )
-        return TransformedImage(self.orig_img, transformed_img, transform)
-
-    def threshold(self, threshold):
-        _, transfomed_img = cv.threshold(
-            self.transformed_img, threshold, 255, cv.THRESH_BINARY_INV
-        )
-        return TransformedImage(
-            self.orig_img, transfomed_img, self.img_transform_info.copy()
-        )
-
-    def gaussian_blur(self, blur_mask):
-        transformed_img = cv.GaussianBlur(
-            self.transformed_img, (blur_mask, blur_mask), 0
-        )
-        return TransformedImage(
-            self.orig_img, transformed_img, self.img_transform_info.copy()
-        )
-
-    def erode(self, kernel_size):
-        erosion_kernel = np.ones((kernel_size, kernel_size), np.uint8)
-        transformed_img = cv.erode(self.transformed_img, erosion_kernel, iterations=1)
-        return TransformedImage(
-            self.orig_img, transformed_img, self.img_transform_info.copy()
-        )
-
-    def sharpen(self, kernel):
-        transformed_img = cv.filter2D(self.transformed_img, -1, kernel)
-        return TransformedImage(
-            self.orig_img, transformed_img, self.img_transform_info.copy()
-        )
-
-    def to_grayscale(self):
-        transformed_img = cv.cvtColor(self.transformed_img, cv.COLOR_BGR2GRAY)
-        return TransformedImage(
-            self.orig_img, transformed_img, self.img_transform_info.copy()
-        )
-
-    def show(self):
-        show_image(self.transformed_img)
-
-    def show_original(self):
-        show_image(self.orig_img)
-
-    def contours(self, mode, method=cv.CHAIN_APPROX_SIMPLE):
-        return cv.findContours(self.img, mode, method)
 
 
 @dataclass
@@ -309,7 +134,7 @@ class GuideMark:
         )
 
 
-def detect_horizontal_and_vertical_guides(all_guides, tolerance=10):
+def detect_horizontal_and_vertical_guides(all_guides, tolerance=15):
     # Since there are always going to be more questions than options
     # first we figure out the x coordinate of the horizontal guides
     assert len(all_guides) > 2
@@ -373,12 +198,12 @@ class GuideMatrix:
                     return True
         return False
 
+    def draw(self, img):
+        for guide in self.horizontal_guides:
+            guide.draw(img)
 
-def show_image(img, convert_from_grayscale=False):
-    if convert_from_grayscale:
-        img = cv.cvtColor(img, cv.COLOR_GRAY2RGB)
-    cv.imshow("Image", img)
-    cv.waitKey(0)
+        for guide in self.vertical_guides:
+            guide.draw(img)
 
 
 def get_line_angle(line):
@@ -388,7 +213,7 @@ def get_line_angle(line):
 
 def fix_page_orientation(page_img: TransformedImage):
     sharpening_kernel = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
-    img = page_img.threshold(100).erode(5).sharpen(sharpening_kernel)
+    img = page_img.grayscale().threshold(100).erode(5).sharpen(sharpening_kernel)
 
     contours, _ = img.contours(cv.RETR_EXTERNAL)
 
@@ -435,7 +260,7 @@ def fix_page_orientation(page_img: TransformedImage):
 def detect_triangles(img: TransformedImage, min_area=DPI + 50):
     # Need to use a lower threshold here because students sometimes squible light
     # marks around the triangles.
-    img = img.gaussian_blur(5).threshold(100)
+    img = img.grayscale().gaussian_blur(5).threshold(100)
     contours, hierarchy = img.contours(cv.RETR_TREE)
     all_triangles = []
 
@@ -473,7 +298,7 @@ def detect_bubbles(
 ):
     # Need big blur mask and threshold because students sometimes don't pencil
     # in the mark enough or the scanner makes their marks look jagged.
-    img = img.gaussian_blur(17).threshold(230)
+    img = img.grayscale().gaussian_blur(17).threshold(230)
     # img.show()
     contours, hierarchy = img.contours(cv.RETR_CCOMP)
     detected_circles = []
@@ -568,7 +393,7 @@ def get_image_from_page(page):
         np.frombuffer(page_image_bytes, dtype=np.uint8), cv.IMREAD_UNCHANGED
     )
     assert page_image is not None
-    page_image = TransformedImage(page_image).to_grayscale()
+    page_image = TransformedImage(page_image)
     logger.debug(f"Extracted image from page with resolution: {page_image.shape}")
     page_image = page_image.scale_to(TARGET_IMG_WIDTH, TARGET_IMG_HEIGHT)
     logger.debug(f"Resized to resolution: {(TARGET_IMG_WIDTH, TARGET_IMG_HEIGHT)}")
@@ -697,6 +522,8 @@ def mark_pages(attempt_pages, answer_columns):
         bubble_radius = (
             pdf_bubbles[0].radius + 3 if pdf_bubbles else pdf_guides[0].width
         )
+        # guide_matrix.draw(column.img)
+        # column.show()
 
         draw_detected_objects_on_page(pdf_bubbles, pdf_guides, page)
         draw_correct_answers_on_page(
