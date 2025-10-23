@@ -3,10 +3,8 @@ import pymupdf
 import numpy as np
 
 from dataclasses import dataclass
-from bisect import bisect_left
 import logging
 from itertools import chain
-from copy import deepcopy
 
 BGR_BLUE = (255, 0, 0)
 BGR_GREEN = (0, 255, 0)
@@ -24,112 +22,100 @@ TARGET_ASPECT_RATIO = TARGET_IMG_WIDTH / TARGET_IMG_HEIGHT
 logger = logging.getLogger("OMR")
 
 
-@dataclass
-class TransformationInfo:
-    angle: float
-    center: tuple
-    crop_top: int
-
-    def translate_cords_back(self, x, y):
-        # Convert angle to radians for math functions
-        angle_rad = np.radians(-self.angle)  # Use negative angle for inverse rotation
-        cos_angle = np.cos(angle_rad)
-        sin_angle = np.sin(angle_rad)
-        center_x, center_y = self.center
-
-        # 1. Un-crop the y-coordinate
-        y_uncropped = y + self.crop_top
-        x_uncropped = x
-
-        # 2. Un-rotate the point around the center
-        # Translate point back to origin
-        temp_x = x_uncropped - center_x
-        temp_y = y_uncropped - center_y
-
-        # Rotate point
-        rotated_x = temp_x * cos_angle - temp_y * sin_angle
-        rotated_y = temp_x * sin_angle + temp_y * cos_angle
-
-        x_unrotated = rotated_x + center_x
-        y_unrotated = rotated_y + center_y
-        return x_unrotated, y_unrotated
-
-
-@dataclass
 class ImgTransformationInfo:
-    rotation_radians: float
-    crop_top: int
-    crop_left: int
-    scale_height: float
-    scale_width: float
-
-    def __init__(self):
-        self.rotation_radians = 0
-        self.crop_top = 0
-        self.crop_left = 0
-        self.scale_width = 1.0
-        self.scale_height = 1.0
+    def __init__(self, matrix=None):
+        self.matrix = np.identity(3) if matrix is None else matrix
 
     def record_crop_left(self, pixels):
         assert pixels >= 0, "Cannot crop a negative amount"
-        rotated = deepcopy(self)
-        rotated.crop_left += pixels
-        return rotated
+        crop_matrix = np.array([[1, 0, -pixels], [0, 1, 0], [0, 0, 1]])
+        new_matrix = np.dot(crop_matrix, self.matrix)
+        return ImgTransformationInfo(new_matrix)
 
     def record_crop_right(self, pixels):
-        assert pixels >= 0, "Cannot crop a negative amount"
-        return deepcopy(self)
+        return ImgTransformationInfo(np.array(self.matrix))
 
     def record_crop_top(self, pixels):
         assert pixels >= 0, "Cannot crop a negative amount"
-        cropped = deepcopy(self)
-        cropped.crop_top += pixels
-        return cropped
+        crop_matrix = np.array([[1, 0, 0], [0, 1, -pixels], [0, 0, 1]])
+        new_matrix = np.dot(crop_matrix, self.matrix)
+        return ImgTransformationInfo(new_matrix)
 
     def record_crop_bottom(self, pixels):
-        assert pixels >= 0, "Cannot crop a negative amount"
-        return deepcopy(self)
+        return ImgTransformationInfo(np.array(self.matrix))
 
-    def record_rotate(self, radians):
-        rotated = deepcopy(self)
-        rotated.rotation_radians += radians
-        return rotated
+    def record_rotate(self, radians, center):
+        cos_rad = np.cos(radians)
+        sin_rad = np.sin(radians)
+        center_x, center_y = center
+
+        to_origin = np.array([[1, 0, -center_x], [0, 1, -center_y], [0, 0, 1]])
+        rotation = np.array([[cos_rad, -sin_rad, 0], [sin_rad, cos_rad, 0], [0, 0, 1]])
+        from_origin = np.array([[1, 0, center_x], [0, 1, center_y], [0, 0, 1]])
+
+        rotation_matrix = from_origin @ rotation @ to_origin
+
+        new_matrix = np.dot(rotation_matrix, self.matrix)
+        return ImgTransformationInfo(new_matrix)
 
     def record_scale(self, width_scale, height_scale):
-        scaled = deepcopy(self)
-        scaled.scale_width *= width_scale
-        scaled.scale_height *= height_scale
-        return scaled
+        scale_matrix = np.array(
+            [[1 / width_scale, 0, 0], [0, 1 / height_scale, 0], [0, 0, 1]]
+        )
+        new_matrix = np.dot(scale_matrix, self.matrix)
+        return ImgTransformationInfo(new_matrix)
 
     def to_original(self, x, y):
-        pass
+        inverse_matrix = np.linalg.inv(self.matrix)
+        transformed_point = np.array([x, y, 1])
+        original_point = np.dot(inverse_matrix, transformed_point)
+        return original_point[0], original_point[1]
 
     def horizontal_length_to_original(self, length):
-        return length * self.scale_width
+        # For a forward matrix, the scaling factor is the inverse of what's stored.
+        return length / self.matrix[0, 0]
 
     def vertical_length_to_original(self, length):
-        return length * self.scale_height
+        # For a forward matrix, the scaling factor is the inverse of what's stored.
+        return length / self.matrix[1, 1]
+
+    def copy(self):
+        return ImgTransformationInfo(np.array(self.matrix))
 
 
 class TransformedImage:
     def __init__(self, orig_img, transform_img=None, transform_info=None):
         self.orig_img = orig_img
-        self.transformed_img = transform_img or orig_img.copy()
+        self.transformed_img = (
+            transform_img if transform_img is not None else orig_img.copy()
+        )
         self.img_transform_info = transform_info or ImgTransformationInfo()
 
     @property
     def img(self):
-        return self.transformed_img.copy()
+        return self.transformed_img
+
+    @property
+    def width(self):
+        return self.transformed_img.shape[1]
+
+    @property
+    def height(self):
+        return self.transformed_img.shape[0]
+
+    @property
+    def shape(self):
+        return self.transformed_img.shape
 
     def crop_right(self, pixels):
         transform = self.img_transform_info.record_crop_right(pixels)
         img_width = self.transformed_img.shape[1]
-        transformed_img = self.transformed_img[:, : img_width - pixels]
+        transformed_img = self.transformed_img[:, : img_width - pixels].copy()
         return TransformedImage(self.orig_img, transformed_img, transform)
 
     def crop_left(self, pixels):
         transform = self.img_transform_info.record_crop_left(pixels)
-        transformed_img = self.transformed_img[:, pixels:]
+        transformed_img = self.transformed_img[:, pixels:].copy()
         return TransformedImage(self.orig_img, transformed_img, transform)
 
     def crop_top(self, pixels):
@@ -139,14 +125,13 @@ class TransformedImage:
 
     def crop_bottom(self, pixels):
         transform = self.img_transform_info.record_crop_bottom(pixels)
-        height = self.transformed_img.shape[0]
-        transformed_img = self.transformed_img[: height - pixels, :]
+        transformed_img = self.transformed_img[:pixels, :]
         return TransformedImage(self.orig_img, transformed_img, transform)
 
     def scale_to(self, target_width, target_height):
         height, width = self.transformed_img.shape[0], self.transformed_img.shape[1]
         transform = self.img_transform_info.record_scale(
-            target_width / width, target_height / height
+            width / target_width, height / target_height
         )
         transformed_img = cv.resize(
             self.transformed_img,
@@ -156,10 +141,10 @@ class TransformedImage:
         return TransformedImage(self.orig_img, transformed_img, transform)
 
     def rotate(self, radians):
-        transform = self.img_transform_info.record_rotate(radians)
         height, width = self.transformed_img.shape[0], self.transformed_img.shape[1]
         center = (width // 2, height // 2)
-        rotation_matrix = cv.getRotationMatrix2D(center, radians, 1.0)
+        transform = self.img_transform_info.record_rotate(radians, center)
+        rotation_matrix = cv.getRotationMatrix2D(center, np.degrees(radians), 1.0)
         transformed_img = cv.warpAffine(
             self.transformed_img,
             rotation_matrix,
@@ -170,11 +155,11 @@ class TransformedImage:
         return TransformedImage(self.orig_img, transformed_img, transform)
 
     def threshold(self, threshold):
-        transfomed_img = cv.threshold(
+        _, transfomed_img = cv.threshold(
             self.transformed_img, threshold, 255, cv.THRESH_BINARY_INV
         )
         return TransformedImage(
-            self.orig_img, transfomed_img, deepcopy(self.img_transform_info)
+            self.orig_img, transfomed_img, self.img_transform_info.copy()
         )
 
     def gaussian_blur(self, blur_mask):
@@ -182,31 +167,36 @@ class TransformedImage:
             self.transformed_img, (blur_mask, blur_mask), 0
         )
         return TransformedImage(
-            self.orig_img, transformed_img, deepcopy(self.img_transform_info)
+            self.orig_img, transformed_img, self.img_transform_info.copy()
         )
 
     def erode(self, kernel_size):
         erosion_kernel = np.ones((kernel_size, kernel_size), np.uint8)
         transformed_img = cv.erode(self.transformed_img, erosion_kernel, iterations=1)
         return TransformedImage(
-            self.orig_img, transformed_img, deepcopy(self.img_transform_info)
+            self.orig_img, transformed_img, self.img_transform_info.copy()
         )
 
     def sharpen(self, kernel):
         transformed_img = cv.filter2D(self.transformed_img, -1, kernel)
         return TransformedImage(
-            self.orig_img, transformed_img, deepcopy(self.img_transform_info)
+            self.orig_img, transformed_img, self.img_transform_info.copy()
+        )
+
+    def to_grayscale(self):
+        transformed_img = cv.cvtColor(self.transformed_img, cv.COLOR_BGR2GRAY)
+        return TransformedImage(
+            self.orig_img, transformed_img, self.img_transform_info.copy()
         )
 
     def show(self):
         show_image(self.transformed_img)
 
-    def draw_circle_on_original(self, center, radius):
-        self.img_transform_info.to_original()
-        pass
+    def show_original(self):
+        show_image(self.orig_img)
 
-    def draw_square_on_original(self):
-        pass
+    def contours(self, mode, method=cv.CHAIN_APPROX_SIMPLE):
+        return cv.findContours(self.img, mode, method)
 
 
 @dataclass
@@ -222,14 +212,18 @@ class Bubble:
     def draw(self, img):
         cv.circle(img, self.cords, self.radius, BGR_GREEN)
 
-    def to_pdf_cords(self, transform: TransformationInfo):
+    def to_pdf_cords(self, transform: ImgTransformationInfo):
         assert transform is not None
-        x_unrotated, y_unrotated = transform.translate_cords_back(self.x, self.y)
+        x_orig, y_orig = transform.to_original(self.x, self.y)
 
         # 3. Scale to PDF coordinates
-        pdf_x = x_unrotated * 72 / DPI
-        pdf_y = y_unrotated * 72 / DPI
-        pdf_radius = int(self.radius * 72 / DPI)
+        pdf_x = x_orig * 72 / DPI
+        pdf_y = y_orig * 72 / DPI
+        pdf_radius = max(
+            transform.horizontal_length_to_original(self.radius),
+            transform.vertical_length_to_original(self.radius),
+        )
+        pdf_radius = int(pdf_radius * 72 / DPI)
 
         return Bubble(x=pdf_x, y=pdf_y, radius=pdf_radius)
 
@@ -251,20 +245,18 @@ class OrientationLine:
 
     @property
     def angle(self):
-        return np.degrees(
-            np.arctan2(self.end_y - self.start_y, self.end_x - self.start_x)
-        )
+        return np.arctan2(self.end_y - self.start_y, self.end_x - self.start_x)
 
-    def draw(self, img):
-        cv.line(img, self.start_cords, self.end_cords, BGR_BLUE, 2)
+    def draw(self, img: TransformedImage):
+        cv.line(img.img, self.start_cords, self.end_cords, BGR_BLUE, 2)
 
 
 @dataclass
 class GuideMark:
-    x: int
-    y: int
-    width: int
-    height: int
+    x: float
+    y: float
+    width: float
+    height: float
 
     @property
     def top_left_cords(self):
@@ -287,18 +279,25 @@ class GuideMark:
         return self.y + self.height / 2
 
     def draw(self, img):
-        cv.rectangle(img, self.top_left_cords, self.bottom_right_cords, BGR_BLUE)
+        cv.rectangle(
+            img,
+            (int(self.x), int(self.y)),
+            (int(self.x + self.width), int(self.y + self.height)),
+            BGR_BLUE,
+        )
 
-    def to_pdf_cords(self, transform: TransformationInfo):
+    def to_pdf_cords(self, transform: ImgTransformationInfo):
         assert transform is not None
-        x_unrotated, y_unrotated = transform.translate_cords_back(self.x, self.y)
+        x_orig, y_orig = transform.to_original(self.x, self.y)
 
         # 3. Scale to PDF coordinates
-        pdf_x = x_unrotated * 72 / DPI
-        pdf_y = y_unrotated * 72 / DPI
+        pdf_x = x_orig * 72 / DPI
+        pdf_y = y_orig * 72 / DPI
 
-        pdf_w = int(self.width * 72 / DPI)
-        pdf_h = int(self.height * 72 / DPI)
+        pdf_w = transform.horizontal_length_to_original(self.width)
+        pdf_h = transform.vertical_length_to_original(self.height)
+        pdf_w = pdf_w * 72 / DPI
+        pdf_h = pdf_h * 72 / DPI
         return GuideMark(x=pdf_x, y=pdf_y, width=pdf_w, height=pdf_h)
 
     def shifted_by(self, x_offset, y_offset):
@@ -352,7 +351,7 @@ class GuideMatrix:
         hor_guide = self.horizontal_guides[row]
         return (vert_guide.center_x, hor_guide.center_y)
 
-    def to_pdf_cords(self, transform: TransformationInfo):
+    def to_pdf_cords(self, transform: ImgTransformationInfo):
         pdf_guides = [g.to_pdf_cords(transform) for g in self.vertical_guides] + [
             g.to_pdf_cords(transform) for g in self.horizontal_guides
         ]
@@ -382,36 +381,18 @@ def show_image(img, convert_from_grayscale=False):
     cv.waitKey(0)
 
 
-def preprocess_image_for_detection(
-    img: cv.typing.MatLike, /, blur_mask=5, threshold=230
-) -> cv.typing.MatLike:
-    if blur_mask > 3:
-        img = cv.GaussianBlur(img, (blur_mask, blur_mask), 0)
-    img = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
-    _, img = cv.threshold(img, threshold, 255, cv.THRESH_BINARY_INV)
-    return img
-
-
 def get_line_angle(line):
     x1, y1, x2, y2 = line[0]
     return np.degrees(np.arctan2(y2 - y1, x2 - x1))
 
 
-def fix_page_orientation(page_img):
-    img = cv.cvtColor(page_img, cv.COLOR_BGR2GRAY)
-    _, img = cv.threshold(img, 100, 255, cv.THRESH_BINARY_INV)
-
-    # Erode away thin lines.
-    erosion_kernel = np.ones((5, 5), np.uint8)
-    img = cv.erode(img, erosion_kernel, iterations=1)
-
-    # Sharpen whats left.
+def fix_page_orientation(page_img: TransformedImage):
     sharpening_kernel = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
-    img = cv.filter2D(img, -1, sharpening_kernel)
+    img = page_img.threshold(100).erode(5).sharpen(sharpening_kernel)
 
-    contours, _ = cv.findContours(img, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
+    contours, _ = img.contours(cv.RETR_EXTERNAL)
 
-    h, w = page_img.shape[:2]
+    h, w = img.shape[:2]
     min_line_length = int(w * 0.80)
 
     lines = []
@@ -431,7 +412,7 @@ def fix_page_orientation(page_img):
         logger.warning(
             "No dominant long lines were detected. Returning original image."
         )
-        return page_img, None
+        return page_img
 
     for line in lines:
         line.draw(page_img)
@@ -440,33 +421,22 @@ def fix_page_orientation(page_img):
     median_angle = float(np.median(angles))
     logger.debug(f"Rotating image by {-median_angle} degrees")
 
-    center = (w // 2, h // 2)
-    rotation_matrix = cv.getRotationMatrix2D(center, median_angle, 1.0)
-    rotated_image = cv.warpAffine(
-        page_img,
-        rotation_matrix,
-        (w, h),
-        flags=cv.INTER_CUBIC,
-        borderMode=cv.BORDER_REPLICATE,
-    )
-
-    top = min(lines, key=lambda l: l.start_y).start_y
-    bottom = max(lines, key=lambda l: l.start_y).start_y
+    top_line = min(lines, key=lambda line: line.start_y)
+    top = max(top_line.start_y, top_line.end_y)
+    bottom_line = max(lines, key=lambda line: line.start_y)
+    bottom = min(bottom_line.start_y, bottom_line.end_y)
     logger.debug(f"Cropping image to height: {top}, {bottom}")
-    cropped_image = rotated_image[top:bottom, :]
-
-    transformation_data = TransformationInfo(
-        angle=float(median_angle), center=center, crop_top=top
-    )
-    return cropped_image, transformation_data
+    page_img = page_img.rotate(median_angle).crop_top(top).crop_bottom(bottom)
+    # page_img.show()
+    # page_img.show_original()
+    return page_img
 
 
-def detect_triangles(img, min_area=DPI + 50):
+def detect_triangles(img: TransformedImage, min_area=DPI + 50):
     # Need to use a lower threshold here because students sometimes squible light
     # marks around the triangles.
-    img = preprocess_image_for_detection(img, threshold=180)
-    # show_image(img)
-    contours, hierarchy = cv.findContours(img, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
+    img = img.gaussian_blur(5).threshold(100)
+    contours, hierarchy = img.contours(cv.RETR_TREE)
     all_triangles = []
 
     for i, contour in enumerate(contours):
@@ -490,24 +460,22 @@ def detect_triangles(img, min_area=DPI + 50):
         if hierarchy[0][i][2] != -1:
             continue
         x, y, w, h = cv.boundingRect(contour)
-        all_triangles.append(GuideMark(x=int(x), y=int(y), width=int(w), height=int(h)))
+        all_triangles.append(GuideMark(x=x, y=y, width=w, height=h))
 
     return all_triangles
 
 
 def detect_bubbles(
-    img,
+    img: TransformedImage,
     min_area=DPI,
     circularity_threshold=0.8,
     solidity_threshold=0.8,
 ):
     # Need big blur mask and threshold because students sometimes don't pencil
     # in the mark enough or the scanner makes their marks look jagged.
-    img = preprocess_image_for_detection(img, blur_mask=17)
-    if False:
-        erosion_kernel = np.ones((11, 11), np.uint8)
-        img = cv.erode(img, erosion_kernel, iterations=1)
-    contours, hierarchy = cv.findContours(img, cv.RETR_CCOMP, cv.CHAIN_APPROX_SIMPLE)
+    img = img.gaussian_blur(17).threshold(230)
+    # img.show()
+    contours, hierarchy = img.contours(cv.RETR_CCOMP)
     detected_circles = []
     for i, contour in enumerate(contours):
         # We are looking for contours that are external (no parent) and have no children.
@@ -567,17 +535,6 @@ def detect_bubbles(
     return detected_circles
 
 
-def gather_into_columns(lst, demarkation_points, key=lambda x: x):
-    assert sorted(demarkation_points) == demarkation_points, (
-        "demarkation points must be sorted"
-    )
-    columns = [[] for _ in range(len(demarkation_points) + 1)]
-    for item in lst:
-        idx = bisect_left(demarkation_points, key(item))
-        columns[idx].append(item)
-    return columns
-
-
 def has_a_bubble_at(point, bubbles, tolerance=30):
     for bubble in bubbles:
         if (
@@ -588,59 +545,21 @@ def has_a_bubble_at(point, bubbles, tolerance=30):
     return False
 
 
-def build_attempt_matrices(guide_matrices, bubble_columns):
-    assert len(guide_matrices) == len(bubble_columns), (
-        "Both guide matrices and answers must be the same size"
-    )
-    attempt_matrices = []
-    for guide_matrix, bubbles in zip(guide_matrices, bubble_columns):
-        num_rows = guide_matrix.num_rows
-        num_cols = guide_matrix.num_cols
-        attempt_matrix = [[0 for _ in range(num_cols)] for _ in range(num_rows)]
+def raw_bubbles_to_attempt_matrix(bubbles, guide_matrix):
+    num_rows, num_cols = guide_matrix.num_rows, guide_matrix.num_cols
+    attempt_matrix = [[0 for _ in range(num_cols)] for _ in range(num_rows)]
 
-        for row in range(num_rows):
-            for col in range(num_cols):
-                cell_center = guide_matrix.cell_center_at(row, col)
-                if has_a_bubble_at(cell_center, bubbles):
-                    attempt_matrix[row][col] = 1
-        attempt_matrices.append(attempt_matrix)
-    return attempt_matrices
-
-
-def get_attempt_matrix_from_raw_objs(
-    img: cv.typing.MatLike, bubbles: list, guide_points
-):
-    column_cutoffs = [int(img.shape[1] / 2)]  # Only 2 columns for now
-    columns = gather_into_columns(guide_points, column_cutoffs, key=lambda g: g.x)
-    guide_matricies = [GuideMatrix(c) for c in columns]
-    answers = gather_into_columns(bubbles, column_cutoffs, key=lambda b: b.x)
-    attempt_matrices = build_attempt_matrices(guide_matricies, answers)
-    return list(chain(*attempt_matrices)), guide_matricies
+    for row in range(num_rows):
+        for col in range(num_cols):
+            cell_center = guide_matrix.cell_center_at(row, col)
+            if has_a_bubble_at(cell_center, bubbles):
+                attempt_matrix[row][col] = 1
+    return attempt_matrix
 
 
 def draw_all_objects_on(to_draw_on, *objs_to_draw):
     for obj in objs_to_draw:
         obj.draw(to_draw_on)
-
-
-def get_attempts_on_page_img(page_image: cv.typing.MatLike):
-    processed_image, transformation_data = fix_page_orientation(page_image)
-    if transformation_data is None:
-        # If orientation failed, we can't reliably detect anything.
-        return [], [], [], [], None
-
-    guides = detect_triangles(processed_image)
-    bubbles = detect_bubbles(processed_image)
-
-    # draw_all_objects_on(processed_image, *guides, *bubbles)
-    # show_image(processed_image)
-    logger.debug(f"Detected {len(guides)} guides")
-
-    attempt_matrix, guide_matrices = get_attempt_matrix_from_raw_objs(
-        processed_image, bubbles, guides
-    )
-    bubbles = filter_out_of_grid_bubbles(bubbles, guide_matrices)
-    return attempt_matrix, guides, bubbles, guide_matrices, transformation_data
 
 
 def get_image_from_page(page):
@@ -649,46 +568,59 @@ def get_image_from_page(page):
         np.frombuffer(page_image_bytes, dtype=np.uint8), cv.IMREAD_UNCHANGED
     )
     assert page_image is not None
+    page_image = TransformedImage(page_image).to_grayscale()
     logger.debug(f"Extracted image from page with resolution: {page_image.shape}")
-    page_image = cv.resize(
-        page_image, (TARGET_IMG_WIDTH, TARGET_IMG_HEIGHT), interpolation=cv.INTER_AREA
-    )
+    page_image = page_image.scale_to(TARGET_IMG_WIDTH, TARGET_IMG_HEIGHT)
     logger.debug(f"Resized to resolution: {(TARGET_IMG_WIDTH, TARGET_IMG_HEIGHT)}")
     return page_image
 
 
-def get_answers_from_file(document):
-    all_answers = []
-    for page in document.pages():
+def pages_to_columns(pages):
+    for page in pages:
         page_image = get_image_from_page(page)
-        answers_on_this_page, *_ = get_attempts_on_page_img(page_image)
-        all_answers.append(answers_on_this_page)
-    return all_answers
+        page_image = fix_page_orientation(page_image)
+        center = page_image.width // 2
+        yield page_image.crop_right(center)
+        yield page_image.crop_left(center)
 
 
-def draw_correct_answers_on_page(guide_matrices, answers, radius, page):
-    guide_matrices = list(guide_matrices)
-    num_rows_in_matrix = guide_matrices[0].num_rows
+def get_attempts_on_column(img: TransformedImage):
+    guides = detect_triangles(img)
+    bubbles = detect_bubbles(img)
+
+    # draw_all_objects_on(processed_image, *guides, *bubbles)
+    # show_image(processed_image)
+    logger.debug(f"Detected {len(guides)} guides")
+
+    guide_matrix = GuideMatrix(guides)
+    attempt_matrix = raw_bubbles_to_attempt_matrix(bubbles, guide_matrix)
+    bubbles = filter_out_of_grid_bubbles(guide_matrix, bubbles)
+    return attempt_matrix, guides, bubbles, guide_matrix
+
+
+def get_answers_from_file(document):
+    all_answers_columns = []
+    for column in pages_to_columns(document.pages()):
+        answers, _, _, _ = get_attempts_on_column(column)
+        all_answers_columns.append(answers)
+    return all_answers_columns
+
+
+def draw_correct_answers_on_page(guide_matrix, answers, radius, page):
     rot_matrix = page.derotation_matrix
     for row, answer in enumerate(answers):
-        guide_matrix = guide_matrices[row // num_rows_in_matrix]
         for col, option in enumerate(answer):
             if option != 1:
                 continue
-            center = pymupdf.Point(
-                guide_matrix.cell_center_at(row % num_rows_in_matrix, col)
-            )
+            center = pymupdf.Point(guide_matrix.cell_center_at(row, col))
             center = center * rot_matrix
             page.draw_circle(center, radius, color=PDF_GREEN)
 
 
-def draw_question_status_on_page(guide_matrices, results, page):
-    guide_matrices = list(guide_matrices)
-    num_rows_in_matrix = guide_matrices[0].num_rows
+def draw_question_status_on_page(guide_matrix, results, page):
     rot_matrix = page.derotation_matrix
     for row, result in enumerate(results):
-        guide_matrix = guide_matrices[row // num_rows_in_matrix]
-        guide = guide_matrix.horizontal_guide_for_row(row % num_rows_in_matrix)
+        guide = guide_matrix.horizontal_guide_for_row(row)
         guide = guide.shifted_by(-guide.width - 2, 0)
         rect = pymupdf.Rect(
             guide.x, guide.y, guide.x + guide.width, guide.y + guide.height
@@ -699,13 +631,12 @@ def draw_question_status_on_page(guide_matrices, results, page):
         page.draw_rect(rect, color=color, fill=color)
 
 
-def filter_out_of_grid_bubbles(bubbles, guides):
-    filtered_bubbles = []
-    for guide in guides:
-        for bubble in bubbles:
-            if guide.is_point_in_a_cell(bubble.x, bubble.y, bubble.radius):
-                filtered_bubbles.append(bubble)
-    return filtered_bubbles
+def filter_out_of_grid_bubbles(guide, bubbles):
+    filtered = filter(
+        lambda bubble: guide.is_point_in_a_cell(bubble.x, bubble.y, bubble.radius),
+        bubbles,
+    )
+    return list(filtered)
 
 
 def draw_detected_objects_on_page(bubbles, guides, page):
@@ -728,11 +659,9 @@ def draw_detected_objects_on_page(bubbles, guides, page):
         page.draw_rect(rect, color=PDF_BLUE)
 
 
-def correct_attempt_positions(answer_matrix, attempt_matrix):
-    assert len(attempt_matrix) == len(answer_matrix)
-    assert len(attempt_matrix[0]) == len(answer_matrix[0])
+def correct_attempt_positions(attempts, answers):
     positions = []
-    for attempt, answer in zip(attempt_matrix, answer_matrix):
+    for attempt, answer in zip(attempts, answers):
         # for now, the first question with no correct answers marks, the end
         # of the questions
         if not any(answer):
@@ -741,56 +670,58 @@ def correct_attempt_positions(answer_matrix, attempt_matrix):
     return positions
 
 
-def calculate_final_score(attempt_matrix, answer_matrix):
-    positions = correct_attempt_positions(answer_matrix, attempt_matrix)
+def calculate_final_score(attempt_columns, answer_columns):
+    positions = correct_attempt_positions(
+        chain(*attempt_columns), chain(*answer_columns)
+    )
     return sum(positions), len(positions)
 
 
-def mark_pages(attempt_pages, answers):
-    all_attempts = []
-    for page, correct_answers_on_this_page in zip(attempt_pages, answers):
-        page_image = get_image_from_page(page)
-        attempts, guides, bubbles, guide_matrices, transform_data = (
-            get_attempts_on_page_img(page_image)
-        )
-        assert transform_data is not None
-        all_attempts.extend(attempts)
+def repeat_n_times(iterator, n):
+    for i in iterator:
+        for _ in range(n):
+            yield i
 
-        pdf_bubbles = [b.to_pdf_cords(transform_data) for b in bubbles]
-        pdf_guides = [g.to_pdf_cords(transform_data) for g in guides]
-        pdf_guide_matrices = [gm.to_pdf_cords(transform_data) for gm in guide_matrices]
 
-        logger.debug(f"The PDF page is rotated: {page.rotation} degrees")
-        draw_detected_objects_on_page(pdf_bubbles, pdf_guides, page)
-
+def mark_pages(attempt_pages, answer_columns):
+    all_attempt_columns = []
+    for column, column_answers, page in zip(
+        pages_to_columns(attempt_pages),
+        answer_columns,
+        repeat_n_times(attempt_pages, 2),
+    ):
+        attempts, guides, bubbles, guide_matrix = get_attempts_on_column(column)
+        pdf_bubbles = [b.to_pdf_cords(column.img_transform_info) for b in bubbles]
+        pdf_guides = [g.to_pdf_cords(column.img_transform_info) for g in guides]
+        pdf_guide_matrix = guide_matrix.to_pdf_cords(column.img_transform_info)
         bubble_radius = (
             pdf_bubbles[0].radius + 3 if pdf_bubbles else pdf_guides[0].width
         )
+
+        draw_detected_objects_on_page(pdf_bubbles, pdf_guides, page)
         draw_correct_answers_on_page(
-            pdf_guide_matrices,
-            correct_answers_on_this_page,
+            pdf_guide_matrix,
+            column_answers,
             bubble_radius,
             page,
         )
-        correct_positions = correct_attempt_positions(
-            correct_answers_on_this_page, attempts
-        )
-        draw_question_status_on_page(pdf_guide_matrices, correct_positions, page)
+        correct_positions = correct_attempt_positions(column_answers, attempts)
+        draw_question_status_on_page(pdf_guide_matrix, correct_positions, page)
+        all_attempt_columns.append(attempts)
 
-    answers = list(chain(*answers))
     logger.info("Found Answer Matrix as:")
-    for i, answer in enumerate(answers, start=1):
+    for i, answer in enumerate(answer_columns, start=1):
         logger.info(f" {i:2}: {answer}")
 
     logger.info("Attempt:")
-    for i, attempted_answer in enumerate(all_attempts, start=1):
+    for i, attempted_answer in enumerate(all_attempt_columns, start=1):
         logger.info(f" {i:2}: {attempted_answer}")
 
-    score, total_answers = calculate_final_score(all_attempts, answers)
+    score, total_answers = calculate_final_score(all_attempt_columns, answer_columns)
     score_str = f"Score: {score}/{total_answers}"
     logger.info(f"Score: {score_str}")
 
-    first_page = attempt_pages[0]
+    first_page = next(iter(attempt_pages))
     score_loc = pymupdf.Point(20, 20)
     score_loc = score_loc * first_page.derotation_matrix
     first_page.insert_text(
@@ -810,13 +741,13 @@ def mark_single_file(attempt_file_bytes, answer_file_bytes):
     logger.debug("Start processing answer file")
     answers = get_answers_from_file(answer_file)
     attempt_pages = list(attempt_file.pages())
-    assert len(attempt_pages) % len(answers) == 0, (
+    assert len(attempt_pages) % answer_file.page_count == 0, (
         "Not all attempts seem to have all pages"
     )
-    attempts = chunked(attempt_pages, len(answers))
+    attempts = chunked(attempt_pages, answer_file.page_count)
     for num, attempt in enumerate(attempts, start=1):
         try:
-            mark_pages(attempt, answers)
+            mark_pages(list(attempt), answers)
         except Exception as _:
             print(f"Failed to mark attempt {num}. Please check the file!")
 
@@ -831,8 +762,7 @@ def mark_file(attempt_file_bytes, answer_file_bytes):
     logger.debug("Start processing answer file")
     answers = get_answers_from_file(answer_file)
     logger.debug("Start processing attempt file")
-    attempt_pages = list(attempt_file.pages())
-    score, total_answers = mark_pages(attempt_pages, answers)
+    score, total_answers = mark_pages(list(attempt_file.pages()), answers)
     ret = attempt_file.tobytes()
     attempt_file.close()
     return score, total_answers, ret
