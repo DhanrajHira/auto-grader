@@ -139,9 +139,9 @@ class TransformedImage:
         )
         return TransformedImage(self.orig_img, transformed_img, transform)
 
-    def threshold(self, threshold):
+    def threshold(self, threshold, threshold_kind=cv.THRESH_BINARY_INV):
         _, transfomed_img = cv.threshold(
-            self.transformed_img, threshold, 255, cv.THRESH_BINARY_INV
+            self.transformed_img, threshold, 255, threshold_kind
         )
         return TransformedImage(
             self.orig_img, transfomed_img, self.img_transform_info.copy()
@@ -155,9 +155,11 @@ class TransformedImage:
             self.orig_img, transformed_img, self.img_transform_info.copy()
         )
 
-    def erode(self, kernel_size):
+    def erode(self, kernel_size, iterations=1):
         erosion_kernel = np.ones((kernel_size, kernel_size), np.uint8)
-        transformed_img = cv.erode(self.transformed_img, erosion_kernel, iterations=1)
+        transformed_img = cv.erode(
+            self.transformed_img, erosion_kernel, iterations=iterations
+        )
         return TransformedImage(
             self.orig_img, transformed_img, self.img_transform_info.copy()
         )
