@@ -509,6 +509,9 @@ def repeat_n_times(iterator, n):
 
 
 def mark_pages(attempt_pages, answer_columns):
+    attempt_pages = list(attempt_pages)
+    assert len(attempt_pages) > 0, "Attempt needs to have atleast one page"
+
     all_attempt_columns = []
     for column, column_answers, page in zip(
         pages_to_columns(attempt_pages),
@@ -571,16 +574,19 @@ def mark_single_file(attempt_file_bytes, answer_file_bytes):
     assert len(attempt_pages) % answer_file.page_count == 0, (
         "Not all attempts seem to have all pages"
     )
+    scores = []
     attempts = chunked(attempt_pages, answer_file.page_count)
     for num, attempt in enumerate(attempts, start=1):
         try:
-            mark_pages(list(attempt), answers)
+            score, total_answers = mark_pages(attempt, answers)
+            scores.append((score, total_answers))
         except Exception as _:
             print(f"Failed to mark attempt {num}. Please check the file!")
+            scores.append((0, 0))
 
-    ret = attempt_file.tobytes()
+    document = attempt_file.tobytes()
     attempt_file.close()
-    return ret
+    return scores, document
 
 
 def mark_file(attempt_file_bytes, answer_file_bytes):
@@ -589,7 +595,7 @@ def mark_file(attempt_file_bytes, answer_file_bytes):
     logger.debug("Start processing answer file")
     answers = get_answers_from_file(answer_file)
     logger.debug("Start processing attempt file")
-    score, total_answers = mark_pages(list(attempt_file.pages()), answers)
-    ret = attempt_file.tobytes()
+    score, total_answers = mark_pages(attempt_file.pages(), answers)
+    document = attempt_file.tobytes()
     attempt_file.close()
-    return score, total_answers, ret
+    return (score, total_answers), document
