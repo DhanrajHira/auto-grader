@@ -140,11 +140,19 @@ class TransformedImage:
         return TransformedImage(self.orig_img, transformed_img, transform)
 
     def threshold(self, threshold, threshold_kind=cv.THRESH_BINARY_INV):
-        _, transfomed_img = cv.threshold(
+        _, transformed_img = cv.threshold(
             self.transformed_img, threshold, 255, threshold_kind
         )
         return TransformedImage(
-            self.orig_img, transfomed_img, self.img_transform_info.copy()
+            self.orig_img, transformed_img, self.img_transform_info.copy()
+        )
+
+    def otsu_threshold(self, threshold_kind=cv.THRESH_BINARY_INV):
+        _, transformed_img = cv.threshold(
+            self.transformed_img, 0, 255, threshold_kind + cv.THRESH_OTSU
+        )
+        return TransformedImage(
+            self.orig_img, transformed_img, self.img_transform_info.copy()
         )
 
     def gaussian_blur(self, blur_mask):

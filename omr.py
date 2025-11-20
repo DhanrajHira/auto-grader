@@ -35,7 +35,7 @@ class Bubble:
         return (self.x, self.y)
 
     def draw(self, img):
-        cv.circle(img, self.cords, self.radius, BGR_GREEN)
+        cv.circle(img.img, self.cords, self.radius, BGR_GREEN)
 
     def to_pdf_cords(self, transform: ImgTransformationInfo):
         assert transform is not None
@@ -105,7 +105,7 @@ class GuideMark:
 
     def draw(self, img):
         cv.rectangle(
-            img,
+            img.img,
             (int(self.x), int(self.y)),
             (int(self.x + self.width), int(self.y + self.height)),
             BGR_BLUE,
@@ -213,7 +213,13 @@ def get_line_angle(line):
 
 def fix_page_orientation(page_img: TransformedImage):
     sharpening_kernel = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
-    img = page_img.grayscale().threshold(100).erode(5).sharpen(sharpening_kernel)
+    img = (
+        page_img.grayscale()
+        .gaussian_blur(7)
+        .otsu_threshold()
+        .erode(5)
+        .sharpen(sharpening_kernel)
+    )
 
     contours, _ = img.contours(cv.RETR_EXTERNAL)
 
@@ -251,16 +257,16 @@ def fix_page_orientation(page_img: TransformedImage):
     bottom_line = max(lines, key=lambda line: line.start_y)
     bottom = min(bottom_line.start_y, bottom_line.end_y)
     logger.debug(f"Cropping image to height: {top}, {bottom}")
-    page_img = page_img.rotate(median_angle).crop_top(top).crop_bottom(bottom)
     # page_img.show()
     # page_img.show_original()
+    page_img = page_img.rotate(median_angle).crop_bottom(bottom).crop_top(top)
     return page_img
 
 
 def detect_triangles(img: TransformedImage, min_area=DPI + 50):
     # Need to use a lower threshold here because students sometimes squible light
     # marks around the triangles.
-    img = img.grayscale().gaussian_blur(5).threshold(100)
+    img = img.grayscale().gaussian_blur(5).otsu_threshold()
     contours, hierarchy = img.contours(cv.RETR_TREE)
     all_triangles = []
 
