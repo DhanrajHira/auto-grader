@@ -92,10 +92,23 @@ class TransformedImage:
     def shape(self):
         return self.transformed_img.shape
 
+    def subimage(self, left=None, right=None, top=None, bottom=None):
+        left = left or 0
+        right = right or self.width
+        top = top or 0
+        bottom = bottom or self.height
+        transform = (
+            self.img_transform_info.record_crop_right(right)
+            .record_crop_left(left)
+            .record_crop_bottom(bottom)
+            .record_crop_top(top)
+        )
+        transformed_img = self.transformed_img[top:bottom, left:right].copy()
+        return TransformedImage(self.orig_img, transformed_img, transform)
+
     def crop_right(self, pixels):
         transform = self.img_transform_info.record_crop_right(pixels)
-        img_width = self.transformed_img.shape[1]
-        transformed_img = self.transformed_img[:, : img_width - pixels].copy()
+        transformed_img = self.transformed_img[:, :pixels].copy()
         return TransformedImage(self.orig_img, transformed_img, transform)
 
     def crop_left(self, pixels):
@@ -192,3 +205,7 @@ class TransformedImage:
 
     def contours(self, mode, method=cv.CHAIN_APPROX_SIMPLE):
         return cv.findContours(self.img, mode, method)
+
+    @classmethod
+    def blank(cls, width, height):
+        return TransformedImage(np.zeros((height, width), dtype=np.uint8))

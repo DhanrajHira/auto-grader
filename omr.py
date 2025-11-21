@@ -2,7 +2,7 @@ import cv2 as cv
 import pymupdf
 import numpy as np
 
-from transformed_image import ImgTransformationInfo, TransformedImage
+from transformed_image import ImgTransformationInfo, TransformedImage, show_image
 
 from dataclasses import dataclass
 import logging
@@ -10,6 +10,7 @@ from itertools import chain
 
 BGR_BLUE = (255, 0, 0)
 BGR_GREEN = (0, 255, 0)
+BGR_BLACK = (0, 0, 0)
 
 PDF_RED = (1.0, 0.0, 0.0)
 PDF_GREEN = (0.0, 1.0, 0.0)
@@ -20,6 +21,7 @@ TRIANGLE_MIN_AREA = DPI
 TARGET_IMG_HEIGHT = 2200
 TARGET_IMG_WIDTH = 1700
 TARGET_ASPECT_RATIO = TARGET_IMG_WIDTH / TARGET_IMG_HEIGHT
+
 
 logger = logging.getLogger("OMR")
 
@@ -211,16 +213,15 @@ def get_line_angle(line):
     return np.degrees(np.arctan2(y2 - y1, x2 - x1))
 
 
-def fix_page_orientation(page_img: TransformedImage):
+def detect_orientation_lines(img):
     sharpening_kernel = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
     img = (
-        page_img.grayscale()
+        img.grayscale()
         .gaussian_blur(7)
         .otsu_threshold()
         .erode(5)
         .sharpen(sharpening_kernel)
     )
-
     contours, _ = img.contours(cv.RETR_EXTERNAL)
 
     h, w = img.shape[:2]
@@ -238,6 +239,11 @@ def fix_page_orientation(page_img: TransformedImage):
             lines.append(
                 OrientationLine(start_x=0, start_y=lefty, end_x=w - 1, end_y=righty)
             )
+    return lines
+
+
+def fix_page_orientation(page_img: TransformedImage):
+    lines = detect_orientation_lines(page_img)
 
     if not lines:
         logger.warning(
@@ -257,8 +263,6 @@ def fix_page_orientation(page_img: TransformedImage):
     bottom_line = max(lines, key=lambda line: line.start_y)
     bottom = min(bottom_line.start_y, bottom_line.end_y)
     logger.debug(f"Cropping image to height: {top}, {bottom}")
-    # page_img.show()
-    # page_img.show_original()
     page_img = page_img.rotate(median_angle).crop_bottom(bottom).crop_top(top)
     return page_img
 
@@ -290,6 +294,7 @@ def detect_triangles(img: TransformedImage, min_area=DPI + 50):
         # It's -1 if there are no children.
         if hierarchy[0][i][2] != -1:
             continue
+
         x, y, w, h = cv.boundingRect(contour)
         all_triangles.append(GuideMark(x=x, y=y, width=w, height=h))
 
@@ -305,7 +310,6 @@ def detect_bubbles(
     # Need big blur mask and threshold because students sometimes don't pencil
     # in the mark enough or the scanner makes their marks look jagged.
     img = img.grayscale().gaussian_blur(17).threshold(230)
-    # img.show()
     contours, hierarchy = img.contours(cv.RETR_CCOMP)
     detected_circles = []
     for i, contour in enumerate(contours):
@@ -419,8 +423,7 @@ def get_attempts_on_column(img: TransformedImage):
     guides = detect_triangles(img)
     bubbles = detect_bubbles(img)
 
-    # draw_all_objects_on(processed_image, *guides, *bubbles)
-    # show_image(processed_image)
+    draw_all_objects_on(img, *guides, *bubbles)
     logger.debug(f"Detected {len(guides)} guides")
 
     guide_matrix = GuideMatrix(guides)
