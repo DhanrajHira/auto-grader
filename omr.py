@@ -545,7 +545,7 @@ def mark_pages(attempt_pages, answer_columns):
             bubble_radius,
             page,
         )
-        correct_positions = correct_attempt_positions(column_answers, attempts)
+        correct_positions = correct_attempt_positions(attempts, column_answers)
         draw_question_status_on_page(pdf_guide_matrix, correct_positions, page)
         all_attempt_columns.append(attempts)
 
