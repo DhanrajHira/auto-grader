@@ -36,23 +36,11 @@ The application also provides a command-line interface for marking exams.
 
 ### `mark`
 
-Marks a single exam file.
+Marks a single exam file or a directory depending on what was passed as the file argument.
 
 ```bash
 python3 auto_mark.py mark <file> <answer_file>
 ```
-
-### `mark-dir`
-
-Marks all PDF files in a directory.
-
-```bash
-python3 auto_mark.py mark-dir <dir> <answer_file> [-j <threads>]
-```
-
--   `<dir>`: The directory containing the exam files.
--   `<answer_file>`: The path to the answer key file.
--   `-j <threads>`: The number of threads to use for marking.
 
 Running in a multipass vm
 ```bash
