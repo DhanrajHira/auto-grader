@@ -309,7 +309,8 @@ def detect_bubbles(
 ):
     # Need big blur mask and threshold because students sometimes don't pencil
     # in the mark enough or the scanner makes their marks look jagged.
-    img = img.grayscale().gaussian_blur(17).threshold(230)
+
+    img = img.grayscale().gaussian_blur(17).otsu_threshold()
     contours, hierarchy = img.contours(cv.RETR_CCOMP)
     detected_circles = []
     for i, contour in enumerate(contours):
