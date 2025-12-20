@@ -4,7 +4,7 @@ import cv2 as cv
 import onnxruntime as ort
 from rapidfuzz.distance import Levenshtein
 
-from transformed_image import TransformedImage
+from transformed_image import TransformedImage, show_image
 from omr import detect_orientation_lines, get_image_from_page
 
 from argparse import ArgumentParser
@@ -71,7 +71,6 @@ def detect_student_id_digits(grid: TransformedImage):
         cell_contours, _ = cell.contours(cv.RETR_EXTERNAL)
         border_contour = max(cell_contours, key=bounding_rect_area)
         cv.drawContours(cell.img, [border_contour], -1, (0, 0, 0), thickness=10)
-        # cell = make_cell_square(cell)
         digits.append(cell)
     return digits
 
@@ -104,6 +103,7 @@ def extract_student_id(page_img, ort_session):
         return None
     digits = detect_student_id_digits(grid)
     # for d in digits:
+    #     show_image(d.img)
     #     preprocessed_digit = mnist_preprocess_digit(d.img)
     #     show_image(preprocessed_digit)
     batch_data = list(
@@ -119,7 +119,6 @@ def extract_student_id(page_img, ort_session):
         pred = np.argmax(outputs[0])
         predictions.append(str(pred))
     student_id = "".join(predictions)
-    print(student_id)
     return student_id
 
 
@@ -134,18 +133,22 @@ def get_closest_matching_student_id(student_id, known_student_ids):
     return best_match, min_distance
 
 
+def do_fix_detected_student_id(known_ids, student_id):
+    closest_match, distance = get_closest_matching_student_id(student_id, known_ids)
+    if distance <= DISTANCE_THRESHOLD:
+        return closest_match
+    else:
+        print(
+            "Found no known student id that was close enough "
+            f"for {student_id}, the best match was {closest_match}"
+        )
+        return student_id
+
+
 def do_fix_detected_student_ids(known_ids, student_ids):
     fixed_student_ids = []
     for student_id in student_ids:
-        closest_match, distance = get_closest_matching_student_id(student_id, known_ids)
-        if distance <= DISTANCE_THRESHOLD:
-            fixed_student_ids.append(closest_match)
-        else:
-            print(
-                "Found no known student id that was close enough "
-                f"for {student_id}, the best match was {closest_match}"
-            )
-            fixed_student_ids.append(student_id)
+        fixed_student_ids.append(do_fix_detected_student_id(known_ids, student_id))
     return fixed_student_ids
 
 
@@ -184,6 +187,48 @@ def do_list(args):
     out_file = Path(out_file)
     with out_file.open("w") as f:
         f.writelines(map(lambda s: f"{s}\n", all_ids))
+
+
+def get_split_out_dir(args):
+    if args.out_dir is not None:
+        out_dir = Path(args.out_dir).resolve()
+        out_dir.mkdir(exist_ok=True)
+        return out_dir
+    out_dir = Path(f"{args.file}_split").resolve()
+    out_dir.mkdir(exist_ok=True)
+    return out_dir
+
+
+def do_split(args):
+    document = pymupdf.Document(args.file)
+    all_pages = list(document.pages())
+    session = ort.InferenceSession("mnist-8.onnx")
+    known_ids = load_student_ids(args.known_student_ids_fname)
+    out_dir = get_split_out_dir(args)
+
+    if args.first_as_key:
+        answer_key = pymupdf.open()
+        answer_key.insert_pdf(document, from_page=0, to_page=args.pages_per_attempt - 1)
+        answer_key.save(out_dir / "answer_key.pdf")
+        answer_key.close()
+
+    start_at = args.pages_per_attempt if args.first_as_key else 0
+    for page_number in range(start_at, len(all_pages), args.pages_per_attempt):
+        page = all_pages[page_number]
+        page_img = get_image_from_page(page)
+        student_id = extract_student_id(page_img, session) or "0000000"
+        if known_ids:
+            fixed_student_id = do_fix_detected_student_id(known_ids, student_id)
+            print(f"Detected ID as {student_id}, fixed as {fixed_student_id}")
+            out_file_name = f"{fixed_student_id}.pdf"
+        else:
+            print(f"Detected ID as {student_id}")
+            out_file_name = f"{student_id}.pdf"
+
+        new_doc = pymupdf.open()
+        new_doc.insert_pdf(document, from_page=page_number, to_page=page_number)
+        new_doc.save(out_dir / out_file_name)
+        new_doc.close()
 
 
 def do_label(args):
@@ -246,12 +291,43 @@ def main():
         dest="out_file",
         default=None,
     )
-    add_common_options(list_parser, label_parser)
+
+    split_parser = subparsers.add_parser(
+        "split",
+        help="Split the file with all attempts into individual attempts with "
+        "the corresponding detected student ids as file names.",
+    )
+    split_parser.add_argument("file", help="The file to split")
+    split_parser.add_argument(
+        "-n",
+        "--pages-per-attempt",
+        dest="pages_per_attempt",
+        help="Number of pages per attempt",
+        type=int,
+        required=True,
+    )
+    split_parser.add_argument(
+        "-o",
+        "--outdir",
+        help="The name of the output directory",
+        dest="out_dir",
+        default=None,
+    )
+    split_parser.add_argument(
+        "--first-as-answer-key",
+        help="Treat the first attempt as the answer key",
+        dest="first_as_key",
+        action="store_true",
+        default=False,
+    )
+    add_common_options(split_parser, list_parser, label_parser)
     args = parser.parse_args()
     if args.command == "label":
         do_label(args)
     elif args.command == "list":
         do_list(args)
+    elif args.command == "split":
+        do_split(args)
     else:
         print("Not a valid command!")
 
