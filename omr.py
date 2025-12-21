@@ -1,12 +1,12 @@
-import cv2 as cv
-import pymupdf
-import numpy as np
-
-from transformed_image import ImgTransformationInfo, TransformedImage, show_image
-
-from dataclasses import dataclass
 import logging
+from dataclasses import dataclass
 from itertools import chain
+
+import cv2 as cv
+import numpy as np
+import pymupdf
+
+from transformed_image import ImgTransformationInfo, TransformedImage
 
 BGR_BLUE = (255, 0, 0)
 BGR_GREEN = (0, 255, 0)
@@ -50,7 +50,7 @@ class Bubble:
             transform.horizontal_length_to_original(self.radius),
             transform.vertical_length_to_original(self.radius),
         )
-        pdf_radius = int(pdf_radius * 72 / DPI)
+        pdf_radius = pdf_radius * 72 / DPI
 
         return Bubble(x=pdf_x, y=pdf_y, radius=pdf_radius)
 
@@ -263,7 +263,9 @@ def fix_page_orientation(page_img: TransformedImage):
     bottom_line = max(lines, key=lambda line: line.start_y)
     bottom = min(bottom_line.start_y, bottom_line.end_y)
     logger.debug(f"Cropping image to height: {top}, {bottom}")
-    page_img = page_img.rotate(median_angle).crop_bottom(bottom).crop_top(top)
+    if median_angle > 0.01:
+        page_img = page_img.rotate(median_angle)
+    page_img = page_img.crop_bottom(bottom).crop_top(top)
     return page_img
 
 
@@ -535,8 +537,6 @@ def mark_pages(attempt_pages, answer_columns):
         bubble_radius = (
             pdf_bubbles[0].radius + 3 if pdf_bubbles else pdf_guides[0].width
         )
-        # guide_matrix.draw(column.img)
-        # column.show()
 
         draw_detected_objects_on_page(pdf_bubbles, pdf_guides, page)
         draw_correct_answers_on_page(
