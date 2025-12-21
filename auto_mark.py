@@ -1,15 +1,13 @@
-import json
 import csv
+import json
+import logging
+import operator
 from argparse import ArgumentParser
 from concurrent.futures import ProcessPoolExecutor as Pool
 from functools import partial
-import logging
-import operator
-
-from omr import mark_file, mark_single_file
 from pathlib import Path
 
-from rapidfuzz.distance import Levenshtein
+from omr import mark_file, mark_single_file
 
 logger = logging.getLogger("CLI")
 logger.setLevel(logging.WARNING)
@@ -28,57 +26,8 @@ def load_student_ids(student_id_fname):
     return list(map(lambda s: s.strip(), filtered))
 
 
-def get_closest_matching_student_id(student_id, known_student_ids):
-    logger.info(f"Finding closest match for {student_id}")
-    min_distance = 100
-    best_match = None
-    for known_student_id in known_student_ids:
-        distance = Levenshtein.distance(student_id, known_student_id)
-        if distance < min_distance:
-            min_distance = distance
-            best_match = known_student_id
-    logger.info(f"Found closest match as {best_match} with distance of {min_distance}")
-    return best_match, min_distance
-
-
-def do_fix_detected_student_ids(known_ids, student_ids):
-    fixed_student_ids = []
-    for student_id in student_ids:
-        closest_match, distance = get_closest_matching_student_id(student_id, known_ids)
-        if distance <= DISTANCE_THRESHOLD:
-            fixed_student_ids.append(closest_match)
-        else:
-            logger.warning(
-                "Found no known student id that was close enough "
-                f"for {student_id}, the best match was {closest_match}"
-            )
-            fixed_student_ids.append(student_id)
-    return fixed_student_ids
-
-
-def fix_detected_student_ids(known_student_ids_fname, student_ids_fname):
-    logger.info("Fixing student ids")
-    student_ids = load_student_ids(student_ids_fname)
-    known_ids = load_student_ids(known_student_ids_fname)
-    if not student_ids:
-        if known_ids:
-            logger.warning(
-                "Known student IDs were provided but not the detected student IDs."
-            )
-            return None
-        else:
-            logger.warning("Known and detected student IDs were not provided")
-        return None
-
-    if not known_ids:
-        logger.info("Known student IDs not found, not fixing student IDs.")
-        return student_ids
-
-    return do_fix_detected_student_ids(known_ids, student_ids)
-
-
 def build_output_path(attempt_file_path, output_fname_pattern):
-    output_fname = output_fname_pattern.replace("%F", attempt_file_path.name)
+    output_fname = output_fname_pattern.replace("%F", attempt_file_path.stem)
     return attempt_file_path.parent / output_fname
 
 
@@ -120,9 +69,7 @@ def do_mark_single_file(args, file_to_mark):
     with output_file.open("wb+") as f:
         f.write(marked_file_content)
 
-    student_ids = fix_detected_student_ids(
-        args.known_student_ids_fname, args.student_ids_fname
-    )
+    student_ids = load_student_ids(args.student_ids_fname)
     if not student_ids:
         logger.warning(
             f"Skipping writing scores to {args.out_file} file since "
@@ -175,22 +122,6 @@ def do_mark(args):
             (file_name_to_student_id(str(f.name)), score)
             for f, (score, _) in zip(files_to_mark, results)
         ]
-        known_student_ids = load_student_ids(args.known_student_ids_fname)
-        if not known_student_ids:
-            logger.warning(
-                "Could not load known student ids, not fixing detected student ids."
-            )
-            write_scores_to_outfile(results, args.out_file)
-            return
-
-        detected_student_ids = list(map(operator.itemgetter(0), results))
-        fixed_student_ids = do_fix_detected_student_ids(
-            known_student_ids, detected_student_ids
-        )
-        results = zip(
-            fixed_student_ids,
-            map(operator.itemgetter(1), results),
-        )
         write_scores_to_outfile(results, args.out_file)
     else:
         assert len(files_to_mark) == 1
@@ -227,15 +158,9 @@ def main():
         " the to_mark file. (only meaningful when using --single-file)",
     )
     mark_parser.add_argument(
-        "--known-student-ids",
-        dest="known_student_ids_fname",
-        default=None,
-        help="Known student IDs to correct the detected ones.",
-    )
-    mark_parser.add_argument(
         "-p",
         "--graded-file-name",
-        default="graded_%F",
+        default="graded_%F.pdf",
         dest="out_fname_pat",
         help="The pattern that specifies the name of the output PDF file with"
         " the markings",
