@@ -177,7 +177,8 @@ def do_list(args):
     all_pages = list(document.pages())
     session = ort.InferenceSession("mnist-8.onnx")
     all_ids = []
-    for page_number in range(0, len(all_pages), args.pages_per_attempt):
+    start_at = args.pages_per_attempt if args.first_as_key else 0
+    for page_number in range(start_at, len(all_pages), args.pages_per_attempt):
         page = all_pages[page_number]
         page_img = get_image_from_page(page)
         student_id = extract_student_id(page_img, session) or "0000000"
@@ -194,7 +195,7 @@ def get_split_out_dir(args):
         out_dir = Path(args.out_dir).resolve()
         out_dir.mkdir(exist_ok=True)
         return out_dir
-    out_dir = Path(f"{args.file}_split").resolve()
+    out_dir = Path(f"{args.file}.split").resolve()
     out_dir.mkdir(exist_ok=True)
     return out_dir
 
@@ -259,22 +260,21 @@ def add_common_options(*parsers):
             default=None,
             help="Known student IDs to correct the detected ones.",
         )
+        p.add_argument(
+            "--first-as-answer-key",
+            help="Treat the first attempt as the answer key",
+            dest="first_as_key",
+            action="store_true",
+            default=False,
+        )
 
 
 def main():
     parser = ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
-    label_parser = subparsers.add_parser("label")
-    label_parser.add_argument("file")
-    label_parser.add_argument(
-        "-m",
-        "--move",
-        help="move the file instead of creating a copy",
-        dest="move",
-        action="store_true",
-        default=False,
+    list_parser = subparsers.add_parser(
+        "list", help="Write the detected student ids as a text file"
     )
-    list_parser = subparsers.add_parser("list")
     list_parser.add_argument("file")
     list_parser.add_argument(
         "-n",
@@ -313,18 +313,9 @@ def main():
         dest="out_dir",
         default=None,
     )
-    split_parser.add_argument(
-        "--first-as-answer-key",
-        help="Treat the first attempt as the answer key",
-        dest="first_as_key",
-        action="store_true",
-        default=False,
-    )
-    add_common_options(split_parser, list_parser, label_parser)
+    add_common_options(split_parser, list_parser)
     args = parser.parse_args()
-    if args.command == "label":
-        do_label(args)
-    elif args.command == "list":
+    if args.command == "list":
         do_list(args)
     elif args.command == "split":
         do_split(args)

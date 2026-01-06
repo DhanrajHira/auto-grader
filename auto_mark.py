@@ -35,9 +35,14 @@ def mark_and_write_graded(answer_file_path, attempt_file_path, /, output_fname_p
     answer_file = Path(answer_file_path)
     with answer_file.open("rb") as answer_file:
         with attempt_file_path.open("rb") as attempt_file:
-            (score, total_score), marked_file_content = mark_file(
-                attempt_file.read(), answer_file.read()
-            )
+            try:
+                (score, total_score), marked_file_content = mark_file(
+                    attempt_file.read(), answer_file.read()
+                )
+            except Exception as e:
+                print(f"Failed to mark {attempt_file_path}, please check the file.")
+                print(str(e))
+                return (0, 0)
 
     output_file = build_output_path(attempt_file_path, output_fname_pattern)
     with output_file.open("wb+") as f:

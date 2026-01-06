@@ -199,9 +199,11 @@ class TransformedImage:
 
     def show(self):
         show_image(self.transformed_img)
+        return self
 
     def show_original(self):
         show_image(self.orig_img)
+        return self
 
     def contours(self, mode, method=cv.CHAIN_APPROX_SIMPLE):
         return cv.findContours(self.img, mode, method)
