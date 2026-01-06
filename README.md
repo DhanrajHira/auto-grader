@@ -1,65 +1,95 @@
+Here is the raw Markdown code.
+
+```markdown
 # Auto Marker
 
-This application automatically grades exams based on a provided answer key.
+Automated exam grading application using a provided answer key.
 
-## Running the application
-
-1.  **Create a virtual environment:**
-
-    ```bash
-    python3 -m venv venv
-    ```
-
-2.  **Activate the virtual environment:**
-
-    ```bash
-    source venv/bin/activate
-    ```
-
-3.  **Install the dependencies:**
-
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-4.  **Run the application:**
-
-    ```bash
-    streamlit run webapp.py
-    ```
-
-The application will then be available at the URL displayed in your terminal.
-
-## Command-line interface (CLI)
-
-The application also provides a command-line interface for marking exams.
-
-### `mark`
-
-Marks a single exam file or a directory depending on what was passed as the file argument.
+## Installation
 
 ```bash
-python3 auto_mark.py mark <file> <answer_file>
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
 ```
 
-Running in a multipass vm
+## Workflow
+
+### 1. Extract Student IDs
+
+Use `detect_student_id.py` to process the exam bundle. Use `--known-student-ids` to improve accuracy.
+
+**Option A: List Mode (Extract IDs to text file)**
+
+```bash
+python3 detect_student_id.py list C481Final.pdf \
+    --pages-per-attempt 1 \
+    --known-student-ids known.ids \
+    -o C481.student.ids
+
+```
+
+**Option B: Split Mode (Split PDF by Student ID)**
+
+```bash
+python3 detect_student_id.py split C481Final.pdf \
+    --pages-per-attempt 1 \
+    --known-student-ids known.ids \
+    -o C481Final.split
+
+```
+
+*Output: A directory containing `{student_id}.pdf` files.*
+
+### 2. Mark Exams
+
+Use `auto_mark.py` to grade the attempts.
+
+**Method A: Directory (Recommended)**
+Grades a directory of split files. Supports multi-threading (`-j`).
+
+```bash
+python3 auto_mark.py mark C481Final.split/ key.pdf -o final_grades.csv
+
+```
+
+**Method B: Single File**
+Grades the original bundle using the ID list from Step 1.
+
+```bash
+python3 auto_mark.py mark --single-file C481Final.pdf key.pdf \
+    --student-ids C481.student.ids \
+    -o final_grades.csv
+
+```
+
+---
+
+## Multipass VM Setup
+
+**Quick Start**
+
+```bash
+source setup-multipass-ubuntu-24.04-LTS.sh
+
+```
+
+**Manual Setup**
+
 ```bash
 multipass launch 24.04 -n auto-grader-vm
 multipass shell auto-grader-vm
 
-sudo apt update
-sudo apt install python3-pip python3.12-venv
-sudo apt-get install -y libgl1-mesa-dev
+# System Deps
+sudo apt update && sudo apt install -y python3-pip python3.12-venv libgl1-mesa-dev
 
+# Python Setup
 python3 -m venv venv
 source venv/bin/activate
 pip3 install -r requirements.txt
 
-python3 auto_mark.py mark file-to-mark.pdf answer-file.pdf
+# Run
+python3 auto_mark.py mark attempt.pdf key.pdf
 streamlit run webapp.py
-```
- or simply
-
-```bash
-source setup-multipass-ubuntu-24.04-LTS.sh
 ```
